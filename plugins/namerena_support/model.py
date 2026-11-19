@@ -10,6 +10,21 @@ VERSION = 1
 CURRENT = ContextVar("namerena_request", default=None)
 ITEM = ContextVar("namerena_item", default=None)
 
+PAIR_COMMANDS = {
+    "/namer-cp": ("刺评", "teammate_fz.toml", 4),
+    "/namer-fp": ("辅评", "teammate_bc.toml", 4),
+    "/namer-wcp": ("无刺评", "teammate_wc.toml", 4),
+    "/namer-fsp": ("分身评", "teammate_pj.toml", 4),
+    "/namer-pjp": ("配件评", "teammate_fs.toml", 4),
+}
+RATING_ALIASES = {
+    "/namer-bcp": "/namer-cp",
+    "/namer-fzp": "/namer-fp",
+    "/namer-dp": "/namer-wcp",
+    "/namer-cqd": "/namer-cqp",
+}
+RATING_COMMANDS = frozenset(("/namer-cqp", *PAIR_COMMANDS, *RATING_ALIASES))
+
 
 def split_parts(text, separator="+"):
     """只在 JSON/引号/括号之外切分，技能值中的 + 不是组分隔符。"""
@@ -121,7 +136,8 @@ def parse_input(text, command, rounds):
             if len(pieces) > 2 and pieces[-1].startswith("seed:") and pieces[-1].endswith("@!"):
                 seed = {"kind": "seed_control", "value": pieces.pop()[5:-2]}
                 line = "+".join(pieces)
-        groups.append({"input_index": len(groups), **group(line.strip() if command.endswith(("todiy", "cqp", "cp", "fp", "wcp", "fsp", "pjp")) else line, mode), "seed": seed})
+        value = line.strip() if command == "/namer-todiy" or command in RATING_COMMANDS else line
+        groups.append({"input_index": len(groups), **group(value, mode), "seed": seed})
     return {"version": VERSION, "command": command, "groups": groups,
             "settings": {"rounds_requested": rounds, "bench": bench, "bang": bang}}
 

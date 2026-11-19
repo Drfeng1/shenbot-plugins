@@ -29,8 +29,8 @@ Openbox 的几套命令行工具包成 Bot 命令。本文说明命令、依赖�
 | `/namer-peek`、`/namer-peeks` | 查看单个名字的八围与技能，`-peeks` 按原始槽位顺序 | — |
 | `/namer-team`、`/namer-teams` | 同队加成后的八围与熟练度，`-teams` 按原始槽位顺序 | — |
 | `/namer-base` | base 工具，一次只接受一个名字，避免刷屏 | — |
-| `/namer-cqp` | 100% CQP，一行一组，双人组用 `+` 连接 | `tswn-cli` + Openbox 靶子资产 |
-| `/namer-cp` `/namer-fp` `/namer-wcp` `/namer-fsp` `/namer-pjp` | Openbox 队友评测（刺评/辅评/无刺评/分身评/配件评） | `tswn-cli` + backend 资产 |
+| `/namer-cqp`（别名 `/namer-cqd`） | 100% CQP，一行一组，双人组用 `+` 连接 | `tswn-cli` + Openbox 靶子资产 |
+| `/namer-cp`（`/namer-bcp`）、`/namer-fp`（`/namer-fzp`）、`/namer-wcp`（`/namer-dp`）、`/namer-fsp`、`/namer-pjp` | Openbox 队友评测（刺评/辅评/无刺评/分身评/配件评） | `tswn-cli` + backend 资产 |
 | `/namer-todiy` | 名字导出为 `+ol` 覆盖格式，对齐 Openbox 的 `to-diy` | `tswn-cli` |
 
 「JS 运行时」指 `node` 或 `bun`：评分与战斗跑 `plugins/namerena_support/md5/md5-api.js`，用 `use_bun` 决定优先哪一个。

@@ -25,7 +25,7 @@ for _module_name in list(sys.modules):
 
 from namerena_support import name_utils, sqrtools
 from namerena_support.archive import Archive, ArchiveError
-from namerena_support.model import CURRENT, ITEM, parse_input, parse_tswn, split_parts
+from namerena_support.model import CURRENT, ITEM, PAIR_COMMANDS, RATING_ALIASES, RATING_COMMANDS, parse_input, parse_tswn, split_parts
 from namerena_support.runtime import (
     ClientProxy,
     Session,
@@ -94,13 +94,6 @@ EVAL_QP_CMD = f"{CMD_PREFIX}-qp"
 EVAL_QD_CMD = f"{CMD_PREFIX}-qd"
 EVAL_PF_CMD = f"{CMD_PREFIX}-pf"
 CQP_CMD = f"{CMD_PREFIX}-cqp"
-PAIR_COMMANDS = {
-    f"{CMD_PREFIX}-cp": ("刺评", "teammate_fz.toml", 4),
-    f"{CMD_PREFIX}-fp": ("辅评", "teammate_bc.toml", 4),
-    f"{CMD_PREFIX}-wcp": ("无刺评", "teammate_wc.toml", 4),
-    f"{CMD_PREFIX}-fsp": ("分身评", "teammate_pj.toml", 4),
-    f"{CMD_PREFIX}-pjp": ("配件评", "teammate_fs.toml", 4),
-}
 CONVERT_CMD = f"{CMD_PREFIX}-peek"
 CONVERT_RAW_CMD = f"{CMD_PREFIX}-peeks"
 BASE_CMD = f"{CMD_PREFIX}-base"
@@ -120,8 +113,8 @@ PF
     - 一行一个名字/+连接的多个名字
 - {EVAL_PF_CMD} - 一下子全评
     - 一行一个名字/+连接的多个名字
-- {CQP_CMD} - 使用 tswn 计算 100% CQP, 一行一组，双人组用 + 连接
-- /namer-cp /namer-fp /namer-wcp /namer-fsp /namer-pjp - Openbox 队友评测
+- {CQP_CMD}（/namer-cqd）- 使用 tswn 计算 100% CQP, 一行一组，双人组用 + 连接
+- /namer-cp（/namer-bcp）、/namer-fp（/namer-fzp）、/namer-wcp（/namer-dp）、/namer-fsp、/namer-pjp - Openbox 队友评测
 - {CONVERT_CMD} - 查看一个名字的属性, 每一行一个名字
 - {CONVERT_RAW_CMD} - 查看一个名字的属性, 技能按原始顺序输出
 - {TODIY_CMD} - 把名字导出成 +ol 覆盖格式 (对齐 Openbox 的 to-diy), 每行一个名字, 组内多个号用 ++ 连接
@@ -872,7 +865,7 @@ def cmd_pair_rating(
     if not players:
         client.send_message(msg.reply_with("请输入至少一个待测名字"))
         return
-    _, teammate_name, head = PAIR_COMMANDS[command]
+    _, teammate_name, head = PAIR_COMMANDS[RATING_ALIASES.get(command, command)]
     teammate_file = _find_tswn_teammate_file(teammate_name)
     if teammate_file is None:
         client.send_message(
@@ -971,11 +964,11 @@ def run_tswn_cqp(raw_groups: list[str]) -> str:
     return "\n".join(results[index] for index in range(len(raw_groups)))
 
 
-def cmd_cqp(msg: ReciveMessage, client: IcaClient | TailchatClient) -> None:
+def cmd_cqp(msg: ReciveMessage, client: IcaClient | TailchatClient, command: str = CQP_CMD) -> None:
     if "\n" not in msg.content:
-        client.send_message(msg.reply_with(f"请使用 {CQP_CMD} 命令，然后换行输入名字组，每行一组，双人组用 + 连接"))
+        client.send_message(msg.reply_with(f"请使用 {command} 命令，然后换行输入名字组，每行一组，双人组用 + 连接"))
         return
-    raw = msg.content[len(CQP_CMD) :]
+    raw = msg.content[len(command) :]
     raw = raw[raw.find("\n") + 1 :]
     groups = [line.strip() for line in raw.splitlines() if line.strip()]
     if not groups:
@@ -1632,6 +1625,14 @@ def score_all(msg: ReciveMessage, client: IcaClient | TailchatClient) -> None:
     client.send_message(reply)
 
 
+def _rating_command(text: str) -> str | None:
+    if text.startswith(CMD_PREFIX):
+        token = text.split(maxsplit=1)[0]
+        if token in RATING_COMMANDS:
+            return token
+    return None
+
+
 def _dispatch_msg(msg: ReciveMessage, client: IcaClient | TailchatClient) -> None:
     if msg.is_reply or msg.is_from_self:
         return
@@ -1642,11 +1643,11 @@ def _dispatch_msg(msg: ReciveMessage, client: IcaClient | TailchatClient) -> Non
         eval_fight(msg, client)
     elif msg.content.startswith(FIGHT_CMD):
         run_fights(msg, client)
-    elif msg.content.startswith(CQP_CMD):
-        cmd_cqp(msg, client)
-    elif next((command for command in PAIR_COMMANDS if msg.content.startswith(command)), None) is not None:
-        command = next(command for command in PAIR_COMMANDS if msg.content.startswith(command))
-        cmd_pair_rating(msg, client, command)
+    elif (command := _rating_command(msg.content)) is not None:
+        if RATING_ALIASES.get(command, command) == CQP_CMD:
+            cmd_cqp(msg, client, command)
+        else:
+            cmd_pair_rating(msg, client, command)
     elif msg.content.startswith(CONVERT_RAW_CMD):
         # 长命令放前面，避免被 /namer-peek 的前缀匹配抢走
         convert_name(msg, client, sort_skills=False)
@@ -1683,9 +1684,9 @@ def dispatch_msg(msg, client, platform="ica"):
     if msg.is_reply or msg.is_from_self:
         return
     commands = sorted([EVAL_CMD, EVAL_SIMPLE_CMD, EVAL_PP_CMD, EVAL_PD_CMD, EVAL_QP_CMD,
-        EVAL_QD_CMD, EVAL_PF_CMD, CQP_CMD, *PAIR_COMMANDS, CONVERT_CMD, CONVERT_RAW_CMD,
+        EVAL_QD_CMD, EVAL_PF_CMD, CONVERT_CMD, CONVERT_RAW_CMD,
         BASE_CMD, TODIY_CMD, TEAM_CMD, TEAM_RAW_CMD, FIGHT_CMD, HELP_CMD], key=len, reverse=True)
-    command = next((value for value in commands if msg.content.startswith(value)), None)
+    command = _rating_command(msg.content) or next((value for value in commands if msg.content.startswith(value)), None)
     if command is None or (command == EVAL_SIMPLE_CMD and msg.content.startswith(("/namer-", "/namer_"))):
         return
     session = None

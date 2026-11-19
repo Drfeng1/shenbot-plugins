@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .archive import ArchiveError
+from .history_source import ALIASES
 from .model import file_snapshot, member
 from .runtime import PROCESS_DEADLINE, PROCESS_TIMEOUT
 
@@ -232,7 +233,7 @@ def recompute(message, archive, executor, snapshot, *, mode="overwrite"):
         ("platform", "room_id", "message_id", "sender_id", "source_alias", "requested_at")}
     provenance = {"origin": "history_recompute", "source_alias": message.source_alias,
                   "parser_version": 1, "fingerprint": fingerprint, "execution_snapshot": snapshot,
-                  "reconstruction": False, "source_command_alias": getattr(message, "raw_command", command) if getattr(message, "raw_command", command) in ("/namer_peeks", "/namer_teams", "/namer-rhp") else command}
+                  "reconstruction": False, "source_command_alias": raw_command if raw_command in ALIASES else command}
     executor.verify()  # 配置漂移停止整批，不能连续清空后续历史成功结果。
     with archive.history_job(source, payload, module.VERSION, provenance, mode) as writer:
         if writer is None:
