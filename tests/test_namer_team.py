@@ -1,3 +1,6 @@
+import re
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -75,6 +78,36 @@ class NamerTeamTests(unittest.TestCase):
             output = namerena.run_tswn_cqp(["mario", "mario+luigi"])
             self.assertEqual(output.splitlines()[0], "12.345 mario")
             self.assertEqual(output.splitlines()[1].split(None, 1)[1], "mario+luigi")
+
+    @unittest.skipUnless(namerena.resolve_tswn_runner(), "需要 tswn-cli 校验实际二对二胜率")
+    def test_boosted_pair_matches_explicit_two_vs_two(self):
+        group = f"{FIRST}+{SECOND}"
+        with tempfile.TemporaryDirectory() as temp, patch.object(namerena, "_find_tswn_backend_assets", return_value=Path(temp)):
+            root = Path(temp)
+            (root / "targets").mkdir()
+            (root / "teammates").mkdir()
+            (root / "targets/newTarget2.toml").write_text(
+                '[[targets]]\nfactor=1.0\nplayers=["mario@target", "luigi@target"]\n', encoding="utf-8"
+            )
+            (root / "teammates/teammate_fz.toml").write_text(
+                '[[targets]]\nfactor=1.0\nplayers=["teammate@otto"]\n', encoding="utf-8"
+            )
+            # Independent win-rate input specifies exactly two members on either side.
+            # Using bench pair for both calculations would also split +ol in both if
+            # the plugin forgot --player-list-double-plus.
+            [boosted, _], [ally] = namerena._run_tswn_to_diy_groups([group, "teammate@otto"])
+            teams = root / "teams.txt"
+            teams.write_text(f"{boosted}++{ally}\nmario@target++luigi@target\n", encoding="utf-8")
+            cli, cwd = namerena.resolve_tswn_runner()
+            direct = subprocess.run(
+                [*cli, "bench", "win-rate", "-f", str(teams), "--double-plus", "--keep-rq", "-n", "1000"],
+                cwd=cwd, capture_output=True, text=True, encoding="utf-8", check=True,
+            )
+            expected = float(re.search(r"([\d.]+)%", direct.stdout)[1])
+            with patch.object(namerena, "background", side_effect=lambda calculate: calculate()):
+                output = run_command(f"/namer-bcp {group}\nsolo").splitlines()
+            self.assertEqual(output[0], f"{expected:.3f} {group}")
+            self.assertEqual(output[1].split(None, 1)[1], "solo")
 
     def test_bench_compare_uses_bench_auto(self):
         calls = []

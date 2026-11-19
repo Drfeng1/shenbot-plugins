@@ -25,7 +25,18 @@ for _module_name in list(sys.modules):
 
 from namerena_support import name_utils, sqrtools
 from namerena_support.archive import Archive, ArchiveError
-from namerena_support.model import CURRENT, ITEM, PAIR_COMMANDS, RATING_ALIASES, RATING_COMMANDS, parse_input, parse_tswn, split_parts
+from namerena_support.model import (
+    CURRENT,
+    ITEM,
+    PAIR_COMMANDS,
+    PAIR_ROUNDS,
+    RATING_ALIASES,
+    RATING_COMMANDS,
+    pair_members,
+    parse_input,
+    parse_tswn,
+    split_parts,
+)
 from namerena_support.runtime import (
     ClientProxy,
     Session,
@@ -79,7 +90,7 @@ if TYPE_CHECKING:
         TailchatReciveMessage,
     )
 
-VERSION = "0.12.1"
+VERSION = "0.13.0"
 # JS 运行时、tswn 二进制与名字/技能数据都收在 support 包里，入口只留控制逻辑。
 SUPPORT_DIR = Path(__file__).resolve().parent / "namerena_support"
 
@@ -115,6 +126,7 @@ PF
     - 一行一个名字/+连接的多个名字
 - {CQP_CMD}（/namer-cqd）- 使用 tswn 计算 100% CQP, 一行一组，双人组用 + 连接
 - /namer-cp（/namer-bcp）、/namer-fp（/namer-fzp）、/namer-wcp（/namer-dp）、/namer-fsp、/namer-pjp - Openbox 队友评测
+    - 命令后可直接输入或换行，每行一个名字或 A+B；A+B 只评测与 B 组队加成后的 A
 - {CONVERT_CMD} - 查看一个名字的属性, 每一行一个名字
 - {CONVERT_RAW_CMD} - 查看一个名字的属性, 技能按原始顺序输出
 - {TODIY_CMD} - 把名字导出成 +ol 覆盖格式 (对齐 Openbox 的 to-diy), 每行一个名字, 组内多个号用 ++ 连接
@@ -762,15 +774,12 @@ def _run_tswn_to_diy_file(input_file: Path, output_file: Path) -> None:
         raise RuntimeError(f"tswn DIY 转换失败（exit {result.returncode}）\n{details[-800:]}")
 
 
-def _run_tswn_to_diy_names(names: list[str]) -> list[str]:
-    """把名字按行交给 tswn-cli 的 to-diy，返回每行对应的 `+ol` 文本。
+def _run_tswn_to_diy_groups(names: list[str]) -> list[list[str]]:
+    """把名字按行交给 tswn-cli 的 to-diy，按输入行和成员顺序返回覆盖文本。
 
     `to-diy` 的标准输出带 CLI banner，只有 `-o` 写出的文件是纯转换结果，
     所以统一走文件模式；批次输出与输入行严格一一对应。
 
-    组内多个号之间改用 `++` 连接：`+ol:{...}` 里的技能强化值本身就带 `+`
-    （`"17+5"`），单 `+` 拼出来的双号没有 `@队伍` 时会被 tswn 当成“一个号 +
-    武器”，回读后两个号只剩一个。
     """
     with tempfile.TemporaryDirectory(prefix="namer_todiy_") as temp:
         names_file = Path(temp) / "names.txt"
@@ -786,7 +795,33 @@ def _run_tswn_to_diy_names(names: list[str]) -> list[str]:
         raise RuntimeError(
             f"DIY 转换结果行数不一致（输入 {len(names)} 行, 输出 {len(converted)} 行）"
         )
-    return ["++".join(_split_ol_group(line)) for line in converted]
+    return [_split_ol_group(line) for line in converted]
+
+
+def _run_tswn_to_diy_names(names: list[str]) -> list[str]:
+    """用 ++ 连接完整覆盖，便于再次导入没有显式队名的双号组。"""
+    return ["++".join(group) for group in _run_tswn_to_diy_groups(names)]
+
+
+def _pair_subjects(players: list[str]) -> list[str]:
+    subjects = []
+    pairs = {}
+    for index, player in enumerate(players):
+        members = pair_members(player)
+        subjects.append(members[0])
+        if len(members) == 2:
+            pairs[index] = "++".join(members)
+    if pairs:
+        token = ITEM.set(list(pairs))
+        try:
+            converted = _run_tswn_to_diy_groups(list(pairs.values()))
+        finally:
+            ITEM.reset(token)
+        for index, group in zip(pairs, converted, strict=True):
+            if len(group) != 2:
+                raise ValueError(f"第 {index + 1} 行未能导出两个组员")
+            subjects[index] = group[0]
+    return subjects
 
 
 def run_tswn_pair_scores(players: list[str], teammate_file: Path, head: int) -> str:
@@ -809,7 +844,7 @@ def run_tswn_pair_scores(players: list[str], teammate_file: Path, head: int) -> 
         temp_root = Path(temp)
         players_in = temp_root / "players.txt"
         scores_file = temp_root / "scores.txt"
-        players_in.write_text("\n".join(players) + "\n", encoding="utf-8")
+        players_in.write_text("\n".join(_pair_subjects(players)) + "\n", encoding="utf-8")
         result = _run_process(
             [
                 *command,
@@ -820,13 +855,14 @@ def run_tswn_pair_scores(players: list[str], teammate_file: Path, head: int) -> 
                 "--target-factored",
                 "-p",
                 str(players_in),
+                "--player-list-double-plus",  # Keep +ol and skill boosts inside the single subject.
                 "--teammate-list",
                 str(teammate_file),
                 "--teammate-factored",
                 "--head",
                 str(head),
                 "-n",
-                "1000",
+                str(PAIR_ROUNDS),
                 "--keep-rq",
                 "-o",
                 str(scores_file),
@@ -856,14 +892,10 @@ def run_tswn_pair_scores(players: list[str], teammate_file: Path, head: int) -> 
 def cmd_pair_rating(
     msg: ReciveMessage, client: IcaClient | TailchatClient, command: str
 ) -> None:
-    if "\n" not in msg.content:
-        client.send_message(msg.reply_with(f"请使用 {command} 命令，然后换行输入待测名字，每行一个"))
-        return
     raw = msg.content[len(command) :]
-    raw = raw[raw.find("\n") + 1 :]
     players = [line.strip() for line in raw.splitlines() if line.strip()]
     if not players:
-        client.send_message(msg.reply_with("请输入至少一个待测名字"))
+        client.send_message(msg.reply_with(f"请在 {command} 后输入待测名字或 A+B，每行一组"))
         return
     _, teammate_name, head = PAIR_COMMANDS[RATING_ALIASES.get(command, command)]
     teammate_file = _find_tswn_teammate_file(teammate_name)
@@ -1671,11 +1703,8 @@ def _dispatch_msg(msg: ReciveMessage, client: IcaClient | TailchatClient) -> Non
         eval_score(msg, client, "!test!\n!\n\n{test}\n{test}", "qd")
     elif msg.content.startswith(EVAL_PF_CMD):
         score_all(msg, client)
-    elif msg.content.startswith(EVAL_SIMPLE_CMD):
-        # 放在最后, 避免覆盖 前面的命令
-        # 同时过滤掉别的 /namer-xxxxx / /namer_xxxxx
-        if not msg.content.startswith(f"{EVAL_SIMPLE_CMD}-") and not msg.content.startswith(f"{EVAL_SIMPLE_CMD}_"):
-            eval_fight(msg, client)
+    elif msg.content.startswith(EVAL_SIMPLE_CMD) and not msg.content.startswith((f"{EVAL_SIMPLE_CMD}-", f"{EVAL_SIMPLE_CMD}_")):
+        eval_fight(msg, client)
 
 
 def dispatch_msg(msg, client, platform="ica"):

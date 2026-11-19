@@ -24,9 +24,10 @@ RATING_ALIASES = {
     "/namer-cqd": "/namer-cqp",
 }
 RATING_COMMANDS = frozenset(("/namer-cqp", *PAIR_COMMANDS, *RATING_ALIASES))
+PAIR_ROUNDS = 1000
 
 
-def split_parts(text, separator="+"):
+def split_parts(text, separator="+", *, keep_empty=False):
     """只在 JSON/引号/括号之外切分，技能值中的 + 不是组分隔符。"""
     parts, start, index = [], 0, 0
     decoder = json.JSONDecoder()
@@ -49,7 +50,18 @@ def split_parts(text, separator="+"):
             continue
         index += 1
     parts.append(text[start:])
-    return [part for part in parts if part]
+    return parts if keep_empty else [part for part in parts if part]
+
+
+def pair_members(line):
+    """Single names and ordered A+B pairs; +ol/+diy overlays belong to the name."""
+    parts = split_parts(line, keep_empty=True)
+    if len(parts) == 3 and parts[1] == "":
+        parts.pop(1)  # /namer-todiy exports groups with an explicit ++ separator.
+    members = [part.strip() for part in parts]
+    if len(members) > 2 or not all(members):
+        raise ValueError("队友评每行请输入一个名字或 A+B")
+    return members
 
 
 def member(text):
@@ -95,8 +107,20 @@ def group(line, mode="plus"):
     return {"members": [{"member_index": i, **member(part)} for i, part in enumerate(pieces)]}
 
 
+def pair_group(line):
+    members = [{"member_index": i, **member(raw)} for i, raw in enumerate(pair_members(line))]
+    return {"members": members, "evaluated_member_index": 0}
+
+
 def parse_input(text, command, rounds):
     body = text[len(command):]
+    if RATING_ALIASES.get(command, command) in PAIR_COMMANDS:
+        groups = []
+        for line in body.splitlines():
+            if line.strip():
+                groups.append({"input_index": len(groups), **pair_group(line)})
+        return {"version": VERSION, "command": command, "groups": groups,
+                "settings": {"rounds_requested": PAIR_ROUNDS, "pair_rounds": PAIR_ROUNDS}}
     local_mode = command.endswith(("peek", "peeks", "team", "teams", "base"))
     if local_mode:
         body = body.partition("\n")[2] if "\n" in body else ""
