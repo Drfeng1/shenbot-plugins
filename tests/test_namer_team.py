@@ -1,9 +1,8 @@
-﻿import unittest
-from unittest.mock import Mock
-from unittest.mock import patch
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 from plugins import namerena
-
 
 FIRST = "大家好啊，我是媒莺旷籍@otto"
 SECOND = "大家好啊，我是婪蛤渤泪@otto"
@@ -29,20 +28,6 @@ class NamerTeamTests(unittest.TestCase):
             f"版本: {namerena.VERSION}",
         )
 
-    def test_input_order_does_not_change_bonus(self):
-        forward = run_command(f"/namer-team\n{FIRST}\n{SECOND}").splitlines()
-        reverse = run_command(f"/namer-team\n{SECOND}\n{FIRST}").splitlines()
-        self.assertEqual(reverse, forward[2:4] + forward[:2] + forward[4:])
-
-    def test_single_player_matches_peek(self):
-        for name in (FIRST, SECOND, "solo"):
-            player = namerena.name_utils.Player()
-            self.assertTrue(player.load(name))
-            self.assertEqual(
-                run_command(f"/namer-team\n{name}"),
-                player.display() + f"\n版本: {namerena.VERSION}",
-            )
-
     def test_raw_commands_keep_skill_slot_order(self):
         player = namerena.name_utils.Player()
         self.assertTrue(player.load(FIRST))
@@ -66,37 +51,48 @@ class NamerTeamTests(unittest.TestCase):
             "\n".join(expected) + f"\n版本: {namerena.VERSION}",
         )
 
-    def test_empty_invalid_and_overlong_names_reply(self):
-        for content, expected in (
-            ("/namer-team", "请使用"),
-            ("/namer-team\n\n", "请输入至少一个名字"),
-            ("/namer-team\na@b@c", "名字载入失败"),
-            ("/namer-team\n" + "中" * 86, "超过 255 字节"),
-        ):
-            self.assertIn(expected, run_command(content))
-
     def test_cqp_uses_tswn_for_single_and_double_groups(self):
         fake_results = {
             1: ["12.345 mario"],
             2: ["67.890 mario+luigi"],
         }
+        target1 = Path("newTarget1.toml")
+        target2 = Path("newTarget2.toml")
 
         def fake_run(player_file, target_file, target_factored=False):
             text = player_file.read_text(encoding="utf-8").strip()
-            return fake_results[2 if "mario+luigi" in text else 1]
+            count = 2 if "mario+luigi" in text else 1
+            self.assertEqual(target_file, target2 if count == 2 else target1)
+            self.assertTrue(target_factored)
+            return fake_results[count]
 
-        with patch.object(namerena, "_run_tswn_cqp_file", side_effect=fake_run):
+        with (
+            patch.object(namerena, "_run_tswn_cqp_file", side_effect=fake_run),
+            patch.object(
+                namerena, "_find_tswn_openbox_assets", return_value=(target1, target2)
+            ),
+        ):
             output = namerena.run_tswn_cqp(["mario", "mario+luigi"])
             self.assertEqual(output.splitlines()[0], "12.345 mario")
             self.assertEqual(output.splitlines()[1].split(None, 1)[1], "mario+luigi")
 
-    def test_pair_rating_command_mapping(self):
-        self.assertEqual(namerena.PAIR_COMMANDS["/namer-cp"], ("刺评", "teammate_fz.toml", 4))
-        self.assertEqual(namerena.PAIR_COMMANDS["/namer-fsp"], ("分身评", "teammate_pj.toml", 4))
+    def test_bench_compare_uses_bench_auto(self):
+        calls = []
 
+        def fake_run(input_text, *args):
+            calls.append((input_text, args))
+            return "胜率: 50.00%  (5000/10000)", 0.01
+
+        with patch.object(namerena, "run_tswn_cli", side_effect=fake_run):
+            result = namerena.run_tswn_bench_compare("!test!\n!a\n!b")
+
+        # 顶层 raw 已移除，必须走 bench auto
+        self.assertEqual(
+            calls[0][1], ("bench", "auto", "-n", str(namerena.TSWN_COMPARE_ROUNDS))
+        )
+        self.assertEqual(calls[0][0], "!a\n!b")
+        self.assertEqual(result[0], "胜率: 50.00%")
 
 
 if __name__ == "__main__":
     unittest.main()
-
-

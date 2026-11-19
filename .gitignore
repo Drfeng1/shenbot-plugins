@@ -1,9 +1,12 @@
 config*
 
+# 两把 OpenAI API Key 的本地文件；不进入提交，也不随克隆被 git add -A 收进来。
+openai_api_key.toml
+
 *env*
 
 *__pycache__*
 *.pyc
 .lh
-plugins/name_utils/tswn-cli
-plugins/name_utils/tswn-cli.exe
+plugins/namerena_support/name_utils/tswn-cli
+plugins/namerena_support/name_utils/tswn-cli.exe

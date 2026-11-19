@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import io
 import time
-import traceback
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, List
 
 import requests
 from shenbot_api import ConfigStorage, PluginManifest
@@ -11,9 +10,15 @@ from shenbot_api import ConfigStorage, PluginManifest
 # import PIL
 
 if TYPE_CHECKING:
-    from ica_typing import IcaClient, IcaNewMessage, TailchatClient
+    from ica_typing import (
+        IcaClient,
+        IcaNewMessage,
+        ReciveMessage,
+        TailchatClient,
+        TailchatReciveMessage,
+    )
 
-VERSION = "2.9.2-rs"
+VERSION = "2.9.4-rs"
 CMD_PREFIX = "/bmcl"
 BRRS_CMD = "/brrs"
 RANK_CMD = f"{CMD_PREFIX} rank"
@@ -85,8 +90,8 @@ def format_hit_count(count: int) -> str:
 
 
 def wrap_request(
-    url: str, msg: IcaNewMessage, client: IcaClient | TailchatClient
-) -> Optional[dict]:
+    url: str, msg: ReciveMessage, client: IcaClient | TailchatClient
+) -> dict | list | None:
     try:
         if COOKIE is None:
             response = requests.get(url, timeout=REQUEST_TIMEOUT)
@@ -95,34 +100,42 @@ def wrap_request(
             response = requests.get(
                 url, cookies={"openbmclapi-jwt": COOKIE}, timeout=REQUEST_TIMEOUT
             )
-    except requests.exceptions.RequestException:
-        warn_msg = f"数据请求失败, 请检查网络\n{traceback.format_exc()}"
-        reply = msg.reply_with(warn_msg)
-        client.send_and_warn(reply)  # pyright: ignore reportArgumentType
+    except requests.exceptions.RequestException as error:
+        client.warn(f"bmcl：请求失败（{type(error).__name__}）")
+        client.send_and_warn(msg.reply_with("数据请求失败，请检查网络后重试。"))
         return None
-    except Exception as _:
-        warn_msg = f"数据请求中发生未知错误, 请呼叫 shenjack\n{traceback.format_exc()}"
-        reply = msg.reply_with(warn_msg)
-        client.send_and_warn(reply)  # pyright: ignore reportArgumentType
+    if response.status_code != 200:
+        client.send_and_warn(
+            msg.reply_with(
+                f"数据服务暂时不可用（HTTP {response.status_code}），请稍后重试。"
+            )
+        )
         return None
-    if not response.status_code == 200 or response.reason != "OK":
-        warn_msg = f"请求失败, 请检查网络\n{response.status_code} {response.reason}"
-        reply = msg.reply_with(warn_msg)
-        client.send_and_warn(reply)  # pyright: ignore reportArgumentType
+    try:
+        data = response.json()
+    except ValueError:
+        client.send_and_warn(msg.reply_with("数据服务返回了无效数据，请稍后重试。"))
         return None
-    return response.json()
+    if not isinstance(data, (dict, list)):
+        client.send_and_warn(
+            msg.reply_with("数据服务格式发生变化，请稍后重试或更新插件。")
+        )
+        return None
+    return data
 
 
-def bmcl_dashboard(msg: IcaNewMessage, client: IcaClient | TailchatClient) -> None:
+def bmcl_dashboard(msg: ReciveMessage, client: IcaClient | TailchatClient) -> None:
     req_time = time.time()
     # 记录请求时间
     data = wrap_request(
         "https://bd.bangbang93.com/openbmclapi/metric/dashboard", msg, client
     )
+    if data is None:
+        return
     dashboard_status = wrap_request(
         "https://bd.bangbang93.com/openbmclapi/metric/version", msg, client
     )
-    if data is None or dashboard_status is None:
+    if dashboard_status is None:
         return
     global backend_version
     backend_version = dashboard_status["version"]
@@ -226,13 +239,16 @@ def display_rank_full(ranks: list, req_time) -> str:
     return cache.getvalue()
 
 
-def bmcl_rank_general(msg, client):
+def bmcl_rank_general(msg: ReciveMessage, client: IcaClient | TailchatClient) -> None:
     req_time = time.time()
     # 记录请求时间
     rank_data = wrap_request(
         "https://bd.bangbang93.com/openbmclapi/metric/rank", msg, client
     )
     if rank_data is None:
+        return
+    if not rank_data:
+        client.send_message(msg.reply_with("暂无节点数据"))
         return
     # 预处理数据
     for i, r in enumerate(rank_data):
@@ -257,7 +273,7 @@ MAX_DISPLAY = 25
 
 
 def bmcl_rank(
-    msg: IcaNewMessage, client: IcaClient | TailchatClient, name: str
+    msg: ReciveMessage, client: IcaClient | TailchatClient, name: str
 ) -> None:
     req_time = time.time()
     # 记录请求时间
@@ -333,7 +349,7 @@ HELP_MSG = f"""{CMD_PREFIX} -> dashboard
 
 
 def ensure_backend_version(
-    msg: IcaNewMessage, client: IcaClient | TailchatClient
+    msg: ReciveMessage, client: IcaClient | TailchatClient
 ) -> bool:
     global backend_version
     if backend_version != "unknown":
@@ -348,47 +364,42 @@ def ensure_backend_version(
     return True
 
 
-def handle_bmcl_message(
-    msg: IcaNewMessage, client: IcaClient | TailchatClient
-) -> None:
+def handle_bmcl_message(msg: ReciveMessage, client: IcaClient | TailchatClient) -> None:
     content = msg.content.strip()
     if "\n" in content:
         return
-    if not (content.startswith(CMD_PREFIX) or content.startswith(BRRS_CMD)):
+    parts = content.split(maxsplit=1)
+    if not parts or parts[0] not in (CMD_PREFIX, BRRS_CMD):
         return
+    command = parts[0]
+    arguments = parts[1].strip() if len(parts) == 2 else ""
 
     try:
+        if command == CMD_PREFIX and not arguments:
+            # 面板自身获取并缓存版本，避免冷启动重复请求版本接口。
+            bmcl_dashboard(msg, client)
+            return
+        if command == BRRS_CMD:
+            name = arguments
+            show_rank = bool(name)
+        else:
+            rank_parts = arguments.split(maxsplit=1)
+            show_rank = bool(rank_parts) and rank_parts[0] == "rank"
+            name = rank_parts[1].strip() if show_rank and len(rank_parts) == 2 else ""
+        if not show_rank:
+            client.send_message(msg.reply_with(HELP_MSG))
+            return
         if not ensure_backend_version(msg, client):
             return
-
-        if content.startswith(CMD_PREFIX):
-            if content == CMD_PREFIX:
-                bmcl_dashboard(msg, client)
-            elif content == RANK_CMD:
-                bmcl_rank_general(msg, client)
-            elif content.startswith(RANK_CMD) and len(content) > len(RANK_CMD) + 1:
-                name = content[len(RANK_CMD) + 1 :]
-                bmcl_rank(msg, client, name)
-            else:
-                reply = msg.reply_with(HELP_MSG)
-                client.send_message(reply)  # pyright: ignore reportArgumentType
-        elif content.startswith(BRRS_CMD):
-            if content == BRRS_CMD:
-                reply = msg.reply_with(HELP_MSG)
-                client.send_message(reply)  # pyright: ignore reportArgumentType
-            else:
-                name = content.split(" ")
-                if len(name) > 1:
-                    bmcl_rank(msg, client, name[1])
-        # elif content == "/bm93":
-        #     bangbang_img(msg, client)
-    except Exception:  # noqa
-        report_msg = f"bmcl插件发生错误,请呼叫shenjack\n{traceback.format_exc()}"
-        client.warn(report_msg)
-        if len(report_msg) > 200:
-            report_msg = report_msg[:200] + "..."  # 防止消息过长
-        reply = msg.reply_with(report_msg)
-        client.send_and_warn(reply)  # pyright: ignore reportArgumentType
+        if name:
+            bmcl_rank(msg, client, name)
+        else:
+            bmcl_rank_general(msg, client)
+    except Exception as error:
+        client.warn(f"bmcl：处理失败（{type(error).__name__}）")
+        client.send_and_warn(
+            msg.reply_with("BMCL 查询处理失败，请稍后重试或更新插件。")
+        )
 
 
 def on_ica_message(msg: IcaNewMessage, client: IcaClient) -> None:
@@ -397,8 +408,7 @@ def on_ica_message(msg: IcaNewMessage, client: IcaClient) -> None:
     handle_bmcl_message(msg, client)
 
 
-def on_tailchat_message(msg, client: TailchatClient) -> None:
+def on_tailchat_message(msg: TailchatReciveMessage, client: TailchatClient) -> None:
     if msg.is_reply:
         return
     handle_bmcl_message(msg, client)
-

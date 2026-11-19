@@ -2,8 +2,11 @@ from __future__ import annotations
 
 # Python 兼容版本 3.8+
 
-from typing import Callable
 from datetime import datetime
+from typing import Callable, Dict, List, Literal, Union
+
+# 与 PyO3 JSON 转换一致：raw_data 是规范化消息，raw_msg 才是可选原协议链。
+JSON = Union[None, bool, int, float, str, List["JSON"], Dict[str, "JSON"]]
 
 """
 ica.rs
@@ -210,6 +213,16 @@ class IcaSendMessage:
         """复用协议侧语音资源，不重新上传或编码；失败时抛出 RuntimeError。"""
         ...
 
+    @property
+    def at(self) -> list[dict]:
+        """发送时的 mention 数组，如 [{"id": 123, "text": "昵称"}]，与接收 at 标记不同。"""
+        ...
+
+    @at.setter
+    def at(self, value: list[dict]) -> None:
+        """每项 id 为整数或 'all'，可选 text 为字符串；非法值抛出 ValueError。"""
+        ...
+
     def remove_reply(self) -> IcaSendMessage:
         """删除回复"""
         ...
@@ -296,6 +309,67 @@ class IcaNewMessage:
         于 2.0.2 添加"""
         ...
 
+    @property
+    def files(self) -> list[dict]:
+        """2.0.6：合法附件结构列表；未解析 URL 的历史/引用附件仍保留 fid，url 为空字符串。"""
+        ...
+
+    @property
+    def file(self) -> dict | None:
+        """2.0.6：可选单附件结构；多附件处理优先使用 files。"""
+        ...
+
+    @property
+    def at(self) -> bool | Literal["all"] | None:
+        """2.0.6：接收提及标记；True 为提及本账号，'all' 为全体成员，未知标记为 None。"""
+        ...
+
+    @property
+    def code(self) -> JSON:
+        """2.0.6：Bridge 协议附加数据，通常为字符串或 None，允许其他 JSON。"""
+        ...
+
+    @property
+    def time(self) -> int | None:
+        """2.0.6：有效原时间返回规范化毫秒时间戳，缺失或无效时为 None，0 为有效时间。"""
+        ...
+
+    @property
+    def raw_data(self) -> dict:
+        """2.0.6：完整 Bridge 输入，包含降级字段原值；区别于当前 to_dict() 快照及协议链 raw_msg。"""
+        ...
+
+    @property
+    def raw_msg(self) -> JSON:
+        """2.0.6：可选原始协议链；规范化消息不含原链时返回 None。"""
+        ...
+
+    @property
+    def reply(self) -> dict | None:
+        """2.0.6：可选 replyMessage 原消息结构，保留旧 reply_msg_* 快捷字段。"""
+        ...
+
+    @property
+    def deleted(self) -> bool: ...
+    @property
+    def hide(self) -> bool: ...
+    @property
+    def reveal(self) -> bool: ...
+    @property
+    def markdown(self) -> bool: ...
+    @property
+    def button_rows(self) -> list: ...
+    @property
+    def recall_info(self) -> str | None: ...
+
+    def to_dict(self) -> dict:
+        """2.0.6：导出规范化 Bridge 消息；可传给 new_message 的 reply。"""
+        ...
+
+    def to_forward_node(self) -> dict:
+        """2.0.6：转换为 FakeMessage 节点；优先原链，否则按可用文本/图片/语音 fid 重建。"""
+        ...
+
 
 class IcaClient:
     """
@@ -303,7 +377,148 @@ class IcaClient:
     """
 
     def report_read(self, message_id: IcaType.MessageId) -> None:
-        """主动上报 QQ 已读，不清除 Bridge 会话未读数；失败时抛出 RuntimeError。"""
+        """兼容旧 API，仅发 reportRead 事件；当前独立 oicq Bridge 漏注册，不代表 QQ 已读成功。"""
+        ...
+
+    def new_message(
+        self, room_id: IcaType.RoomId, content: str = "", reply: dict | None = None
+    ) -> IcaSendMessage:
+        """2.0.6：构造可发送消息；reply 可用查询消息的 to_dict()，room_id=0 拒绝发送。"""
+        ...
+
+    def emit_event(self, event: str, args: list[JSON] | None = None) -> bool:
+        """2.0.6：发送 Socket.IO 事件，仅表示传输受理；已知不可达事件抛出 RuntimeError。"""
+        ...
+
+    def request_event(
+        self, event: str, args: list[JSON] | None = None, timeout: float = 15.0
+    ) -> JSON:
+        """2.0.6：等待 ACK；超时/已知不可达/已知无 ACK 操作抛出 RuntimeError。"""
+        ...
+
+    def get_loaded_messages(
+        self, room_id: IcaType.RoomId, limit: int = 200
+    ) -> list[IcaNewMessage]:
+        """2.0.6：读取该房间已加载缓存，不访问 Bridge，也不重放新消息 hook。"""
+        ...
+
+    def fetch_messages(
+        self,
+        room_id: IcaType.RoomId,
+        options: dict | None = None,
+        timeout: float = 15.0,
+    ) -> list[IcaNewMessage]:
+        """2.0.6：查询 Bridge 本地消息页；无游标首屏会更新 Bridge 未读/提及状态。"""
+        ...
+
+    def search_messages(
+        self,
+        room_id: IcaType.RoomId,
+        keyword: str,
+        offset: int = 0,
+        sender_id: IcaType.UserId | None = None,
+        start_time: int | None = None,
+        end_time: int | None = None,
+        timeout: float = 15.0,
+    ) -> list[IcaNewMessage]:
+        """2.0.6：查询本地消息；room_id=0 跨房间，时间过滤为毫秒，不自动拉取 QQ 历史。"""
+        ...
+
+    def fetch_messages_by_sender(
+        self,
+        room_id: IcaType.RoomId,
+        sender_id: IcaType.UserId,
+        offset: int = 0,
+        snapshot_time: int | None = None,
+        timeout: float = 15.0,
+    ) -> list[IcaNewMessage]:
+        """2.0.6：按发送者分页查询本地消息，snapshot_time 为毫秒快照上界。"""
+        ...
+
+    def fetch_messages_around(
+        self,
+        room_id: IcaType.RoomId,
+        message_id: IcaType.MessageId,
+        before: int = 20,
+        after: int = 20,
+        timeout: float = 15.0,
+    ) -> list[IcaNewMessage]:
+        """2.0.6：查询本地目标消息及其前后文，不触发历史重放。"""
+        ...
+
+    def fetch_image_messages(
+        self,
+        room_id: IcaType.RoomId,
+        offset: int = 0,
+        end_time: int | None = None,
+        timeout: float = 15.0,
+    ) -> list[IcaNewMessage]:
+        """2.0.6：查询本地含图片消息，end_time 为毫秒；不下载图片。"""
+        ...
+
+    def get_system_messages(self, timeout: float = 15.0) -> dict:
+        """2.0.6：拉取当前待处理系统申请，结果按 flag 索引。"""
+        ...
+
+    def get_friends(self, timeout: float = 15.0) -> list[dict]:
+        """2.0.6：查询 Bridge 好友目录。"""
+        ...
+
+    def get_groups(self, timeout: float = 15.0) -> list[dict]:
+        """2.0.6：查询 Bridge 群目录，group_id 使用正群号。"""
+        ...
+
+    def get_forward_messages(
+        self, res_id: str, file_name: str | None = None, timeout: float = 15.0
+    ) -> list[IcaNewMessage]:
+        """2.0.6：展开合并转发资源；返回消息 room_id=0，不归入当前房间历史。"""
+        ...
+
+    def send_merged_forward(
+        self,
+        nodes: list[dict],
+        target: IcaType.RoomId,
+        dm: bool | None = None,
+        origin: int | None = None,
+    ) -> bool:
+        """2.0.6：发送本体 FakeMessage 节点列表；makeForward 无 ACK，仅表示传输受理。"""
+        ...
+
+    def upload_file(self, file_name: str, data: bytes) -> str:
+        """2.0.6：分片上传字节并返回 Bridge 临时文件 hash，不自动发消息。"""
+        ...
+
+    def send_file(
+        self,
+        room_id: IcaType.RoomId,
+        file_name: str,
+        data: bytes,
+        content: str = "",
+        mime: str = "application/octet-stream",
+        reply: dict | None = None,
+        at: list[dict] | None = None,
+    ) -> bool:
+        """2.0.6：上传并发送普通文件；bool 仅表示传输受理。
+
+        本体普通 hash 附件分支不把 reply/at 加入 QQ 文件链；content 仅可能用于
+        私聊回显描述，不保证随文件发送正文。保留这些参数不代表文件附带回复或 @。
+        """
+        ...
+
+    def upload_group_file(
+        self, group_id: int, file_name: str, data: bytes, parent: str = "/"
+    ) -> dict:
+        """2.0.6：上传到正群号的指定目录；返回 {ok: bool, error?: str}。"""
+        ...
+
+    def file_manager_request(
+        self,
+        group_id: int,
+        event: str,
+        args: list[JSON] | None = None,
+        timeout: float = 15.0,
+    ) -> JSON:
+        """2.0.6：通过群 token + 专用 fileMgr 连接请求目录操作，group_id 为正群号。"""
         ...
 
     def handle_request(
@@ -355,14 +570,13 @@ class IcaClient:
     #     所以只能 tokio::task::block_in_place 转换成同步调用)
     #     """
     def send_message(self, message: IcaSendMessage) -> bool:
-        """发送一条消息"""
+        """发送请求被传输层受理时返回 True，不代表 QQ 最终发送成功。"""
         ...
 
     def send_raw_message(self, raw_msg: str, room_id: IcaType.RoomId) -> bool:
-        """
-        发送一条原始信息
-        警告: 小心使用
-        于 2.0.1 添加
+        """发送原始消息节点 JSON 数组；非法 JSON/非节点数组抛 ValueError，bool 仅表示受理。
+
+        2.0.6 修复为本体要求的 JSON 字符串 content + at=[]；不是任意 Socket.IO 事件接口。
         """
         ...
 
@@ -648,24 +862,24 @@ class TailchatClient:
         于 1.2.6 添加"""
         ...
 
-    def reload_plugin_status(self) -> bool:
-        """重载插件状态"""
+    def sync_status_from_file(self) -> None:
+        """从状态文件同步插件启用状态。"""
         ...
 
     def reload_plugin(self, plugin_name: str) -> bool:
         """重载插件"""
         ...
 
-    def set_plugin_status(self, plugin_name: str, status: bool):
+    def set_plugin_status(self, plugin_name: str, status: bool) -> None:
         """设置插件状态"""
         ...
 
-    def get_plugin_status(self, plugin_name: str) -> bool:
+    def get_plugin_status(self, plugin_name: str) -> bool | None:
         """获取插件状态"""
         ...
 
-    def sync_status_to_config(self) -> None:
-        """将插件状态同步到配置文件"""
+    def sync_status_to_file(self) -> None:
+        """将插件状态同步到配置文件。"""
         ...
 
     def debug(self, message: str) -> None:
@@ -678,52 +892,22 @@ class TailchatClient:
         """向日志中输出警告信息"""
 
 
-class ReciveMessage(TailchatReciveMessage, IcaNewMessage):
-    """
-    继承了两边的消息
-    只是用来类型标记, 不能实例化
-    """
-
-    def reply_with(self, message: str) -> IcaReplyMessage | TailchatSendingMessage:  # type: ignore
-        ...
+# 保留历史拼写；这是两个后端消息类型的联合，而不是可实例化的运行时类型。
+ReciveMessage = Union[IcaNewMessage, TailchatReciveMessage]
 
 
-on_load = Callable[[IcaClient], None]
-# def on_load(client: IcaClient) -> None:
-#     ...
-
-on_ica_message = Callable[[IcaNewMessage, IcaClient], None]
-# def on_message(msg: NewMessage, client: IcaClient) -> None:
-#     ...
-
-on_ica_delete_message = Callable[[IcaType.MessageId, IcaClient], None]
-# def on_delete_message(msg_id: MessageId, client: IcaClient) -> None:
-#     ...
-
-on_tailchat_message = Callable[[TailchatClient, TailchatReciveMessage], None]
-# def on_tailchat_message(client: TailchatClient, msg: TailchatReciveMessage) -> None:
-#     ...
-
-on_config = Callable[[bytes], None]
-# 输入为配置文件的(字节)内容
-# 需要自行处理文件解析
-
-require_config = Callable[[None], tuple[str, bytes | str]]
-# file_name, default_data
-# 返回配置文件的内容(字节)
-
+# PluginHost 在加载或重载时快照以下 hook；运行中重新绑定函数需再次重载插件。
 on_load = Callable[[], None]
-# 插件加载完成后调用, 仅在插件加载时调用一次
-# added: bot 0.9.0
-
 on_unload = Callable[[], None]
-# 插件卸载之前调用, 仅在插件卸载时调用一次
-# added: bot 0.9.0
-
-on_reload = Callable[[], None]
-# 插件重载时调用, 仅在插件重载时调用一次
-# added: bot 0.9.0
-
-CONFIG_DATA: str | bytes
-# 配置文件的内容 (类型根据 require_config 返回值而定)
-# 无论有没有配置文件, 都会有一个默认的配置文件内容
+on_ica_message = Callable[[IcaNewMessage, IcaClient], None]
+# 传输候选在 sender/quote/self 通用处理前分派；只有实时 addMessage，不重放历史。
+# 参数是有界来源快照（版本、账号/连接代、房间、源 ID、sender、body、quote_id、时间及 unsupported），不含 client 或引用正文。
+# is_self 仅表示发送者等于账号，不证明是人类手工发送。
+on_ica_message_candidate = Callable[[dict], None]
+on_ica_system_message = Callable[[IcaNewMessage, IcaClient], None]
+on_ica_delete_message = Callable[[IcaType.MessageId, IcaClient], None]
+on_ica_join_request = Callable[[IcaJoinRequest, IcaClient], None]
+# 2.0.6 新 hook 使用 client 在前的参数顺序；历史查询不会回放 on_ica_message。
+on_ica_message_updated = Callable[[IcaClient, int, str, dict], None]
+on_ica_bridge_event = Callable[[IcaClient, str, List[JSON]], None]
+on_tailchat_message = Callable[[TailchatReciveMessage, TailchatClient], None]

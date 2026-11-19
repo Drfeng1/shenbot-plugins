@@ -2,20 +2,15 @@ from __future__ import annotations
 
 import time
 
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ica_typing import IcaNewMessage, IcaClient
-    from ica_typing import TailchatReciveMessage, TailchatClient
-else:
-    IcaNewMessage = TypeVar("NewMessage")
-    IcaClient = TypeVar("IcaClient")
-    TailchatReciveMessage = TypeVar("TailchatReciveMessage")
-    TailchatClient = TypeVar("TailchatClient")
+    from ica_typing import IcaClient, IcaNewMessage
+    from ica_typing import TailchatClient, TailchatReciveMessage
 
 from shenbot_api import PluginManifest
 
-VERSION = "0.0.2"
+VERSION = "0.0.3"
 COUNT_CMD = "/bot-count"
 
 PLUGIN_MANIFEST = PluginManifest(
@@ -47,6 +42,14 @@ class Counter:
         self.tc_msg = [x for x in self.tc_msg if now - x <= self.count_time]
         self.msg_pre_min_tc = len(self.tc_msg) / (self.count_time / 60)
 
+    def refresh(self) -> None:
+        """查询时以同一个时间点刷新两个平台的统计窗口。"""
+        now = time.time()
+        self.ica_msg = [x for x in self.ica_msg if now - x <= self.count_time]
+        self.tc_msg = [x for x in self.tc_msg if now - x <= self.count_time]
+        self.msg_pre_min_ica = len(self.ica_msg) / (self.count_time / 60)
+        self.msg_pre_min_tc = len(self.tc_msg) / (self.count_time / 60)
+
     @property
     def ica_frequence(self) -> float:
         return self.msg_pre_min_ica
@@ -66,6 +69,7 @@ def on_ica_message(msg: IcaNewMessage, client: IcaClient) -> None:
     if msg.is_reply:
         return
     if msg.content == COUNT_CMD:
+        COUNTER.refresh()
         reply = f"ica 每分钟消息数: {COUNTER.ica_frequence:.2f}\ntailchat 每分钟消息数: {COUNTER.tc_frequence:.2f}"
         client.send_message(msg.reply_with(reply))
 
@@ -77,5 +81,6 @@ def on_tailchat_message(msg: TailchatReciveMessage, client: TailchatClient) -> N
     if msg.is_reply:
         return
     if msg.content == COUNT_CMD:
+        COUNTER.refresh()
         reply = f"ica 每分钟消息数: {COUNTER.ica_frequence:.2f}\ntailchat 每分钟消息数: {COUNTER.tc_frequence:.2f}"
         client.send_message(msg.reply_with(reply))

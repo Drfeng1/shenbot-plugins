@@ -5,23 +5,21 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING
 
 from selenium import webdriver
 from selenium.common.exceptions import SessionNotCreatedException, TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-from shenbot_api import ConfigStorage, PluginManifest, python_config_path
 
+from shenbot_api import ConfigStorage, PluginManifest, python_config_path
 
 if TYPE_CHECKING:
     from ica_typing import IcaClient, IcaNewMessage
-else:
-    IcaClient = TypeVar("IcaClient")
-    IcaNewMessage = TypeVar("IcaNewMessage")
 
 
+VERSION = "0.3.5"
 USERNAME = ""
 PASSWORD = ""
 
@@ -38,19 +36,24 @@ config = ConfigStorage(username="", password="")
 PLUGIN_MANIFEST = PluginManifest(
     plugin_id="score",
     name="成绩查询",
-    version="0.3.1",
+    version=VERSION,
     description="查询教务系统最近一个学期的成绩",
     authors=["shenjack"],
     config={"main": config},
 )
 
 _query_lock = threading.Lock()
+_shutdown = threading.Event()
+
+
+class ScoreQueryError(RuntimeError):
+    """查询流程中可以安全展示给用户的固定提示。"""
 
 
 def query_scores() -> str:
     """登录教务系统，并通过成绩 API 获取最近学期的数据。"""
     if not USERNAME or not PASSWORD:
-        raise RuntimeError("请在 score 插件配置中填写 username 和 password")
+        raise ScoreQueryError("请在 score 插件配置中填写 username 和 password")
 
     profile_dir = (Path(python_config_path()) / "score-edge-profile").resolve()
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -73,7 +76,7 @@ def query_scores() -> str:
                     EC.presence_of_element_located((By.NAME, "username"))
                 )
             except TimeoutException as error:
-                raise RuntimeError("统一认证登录页加载超时") from error
+                raise ScoreQueryError("统一认证登录页加载超时") from error
 
             username_input.send_keys(USERNAME)
             driver.find_element(By.NAME, "passwordText").send_keys(PASSWORD)
@@ -86,7 +89,7 @@ def query_scores() -> str:
                     )
                 )
             except TimeoutException as error:
-                raise RuntimeError("登录超时，请在 Edge 中完成安全验证") from error
+                raise ScoreQueryError("登录超时，请在 Edge 中完成安全验证") from error
 
         cookie = "; ".join(
             f"{item['name']}={item['value']}" for item in driver.get_cookies()
@@ -116,17 +119,22 @@ def query_scores() -> str:
     lines = [f"📊 {latest_scores[0]['XNXQDM_DISPLAY']}成绩"]
     for item in latest_scores:
         lines.append(
-            f"{item['KCM']}：{item['XSZCJ']}"
-            f"（{item['XF']}学分，绩点{item['JD']}）"
+            f"{item['KCM']}：{item['XSZCJ']}（{item['XF']}学分，绩点{item['JD']}）"
         )
     return "\n".join(lines)
 
 
 def on_load() -> None:
-    global USERNAME, PASSWORD
+    global USERNAME, PASSWORD, _shutdown
+    _shutdown.set()
+    _shutdown = threading.Event()
     main_config = PLUGIN_MANIFEST.config_unchecked("main")
     USERNAME = str(main_config.get_value("username") or "")
     PASSWORD = str(main_config.get_value("password") or "")
+
+
+def on_unload() -> None:
+    _shutdown.set()
 
 
 def on_ica_message(msg: IcaNewMessage, client: IcaClient) -> None:
@@ -135,19 +143,35 @@ def on_ica_message(msg: IcaNewMessage, client: IcaClient) -> None:
     if msg.sender_id not in client.status.admins:
         return
 
-    if _query_lock.locked():
-        client.send_message(msg.reply_with("成绩正在查询，请稍候。"))
+    if not _query_lock.acquire(blocking=False):
+        client.send_message(msg.reply_with("正在查询成绩，请稍候。"))
         return
 
-    client.send_message(msg.reply_with("正在查询成绩；如 Edge 出现安全验证，请手动完成。"))
+    # 捕获当前启用周期，重新 on_load 不会复活旧任务的回包权限。
+    shutdown = _shutdown
 
     def run_query() -> None:
-        with _query_lock:
+        try:
+            if shutdown.is_set():
+                return
             try:
                 result = query_scores()
-            except Exception as error:
-                message = str(error).strip() or type(error).__name__
-                result = f"成绩查询失败：{message}"
-            client.send_message(msg.reply_with(result))
+            except ScoreQueryError as error:
+                result = f"成绩查询失败：{error}"
+            except Exception as error:  # noqa: BLE001
+                client.warn(f"score：查询失败（{type(error).__name__}）")
+                result = "成绩查询失败，请检查登录状态或网络后重试。"
+            if not shutdown.is_set():
+                client.send_message(msg.reply_with(result))
+        finally:
+            _query_lock.release()
 
-    threading.Thread(target=run_query, daemon=True).start()
+    try:
+        client.send_message(
+            msg.reply_with("正在查询成绩，如 Edge 弹出安全验证请手动完成。")
+        )
+        threading.Thread(target=run_query, daemon=True).start()
+    except Exception:  # noqa: BLE001
+        _query_lock.release()
+        client.warn("score：启动成绩查询失败")
+        client.send_message(msg.reply_with("启动成绩查询失败，请稍后重试。"))

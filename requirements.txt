@@ -1,7 +1,11 @@
-pillow
 lib-not-dr
-requests
+httpx2
+openai
+pillow
 psutil
-tomli
-pydantic
 psycopg
+pydantic
+pyyaml
+requests
+selenium
+tomli
